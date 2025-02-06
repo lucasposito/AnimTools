@@ -5,7 +5,13 @@ from PySide2 import QtWidgets
 from PySide2 import QtCore
 from shiboken2 import wrapInstance
 
-from MayaData.lib import constraint
+from MayaData.lib import constraint, templates
+
+import MayaData
+import json
+
+with open(templates.__path__[0] + '\\shapes.json', 'r') as f:
+    shapes = json.loads(f.read())
 
 
 def maya_main_window():
@@ -355,3 +361,83 @@ class ikfkUI(QtWidgets.QDialog):
 
         for mod in module:
             self.ik_fk.selection[mod] = text
+
+
+class CreateIkFK:
+    def __init__(self):
+        self.global_ctr = 'global_C0_ctl'
+        self.chain_name = 'tentacle'
+        self.chain_size = 12
+
+    @staticmethod
+    def create_ik(name):
+        ik_shape = MayaData.curves.get_shape(f'{name}_ctl')
+        ik_color = MayaData.curves.get_color(f'{name}_ctl')
+        ik_pos = cmds.xform(f'{name}_ctl', q=True, m=True, ws=True)
+
+        ik_prev = cmds.rename(f'{name}_ctl', f'{name}_prev')
+        cmds.setAttr(f'{ik_prev}Shape.visibility', 0)
+
+        ik_ctr = MayaData.curves.load_shape(ik_shape, name=f'{name}_ctl')
+        MayaData.curves.load_color(ik_color, ik_ctr)
+
+        ik_offset = cmds.group(ik_ctr, n=f'{name}_offset')
+        cmds.xform(ik_offset, m=ik_pos, ws=True)
+
+        cmds.parentConstraint(ik_ctr, ik_prev, skipRotate=['y', 'z'])
+
+        return ik_ctr
+
+    @staticmethod
+    def connect_visibility(name, ik_controls, fk_controls, switch_ctr):
+
+        # IK Controls
+        for i in ik_controls:
+            cmds.connectAttr(f'{switch_ctr}.switchIkFk', f'{i}Shape.visibility')
+
+        # FK Controls
+        remap = f'{name}_switch_fk_remap'
+        for i in fk_controls:
+            if cmds.objExists(remap):
+                cmds.connectAttr(f'{remap}.outValue', f'{i}Shape.visibility')
+                continue
+
+            remap = cmds.createNode('remapValue', n=remap)
+            cmds.connectAttr(f'{switch_ctr}.switchIkFk', f'{remap}.inputValue')
+            cmds.setAttr(f'{remap}.outputMin', 1)
+            cmds.setAttr(f'{remap}.outputMax', 0)
+
+    def run(self, branch='L0'):
+        # Delete global visibility attribute
+        for vis_attr in ['chain_IK_vis', 'chain_FK_vis']:
+            if cmds.attributeQuery(vis_attr, ex=True, n=self.global_ctr):
+                cmds.deleteAttr(f'{self.global_ctr}.{vis_attr}')
+
+        name = f'{self.chain_name}_{branch}'
+        ik_name = f'{self.chain_name}_ik_{branch}'
+
+        self.create_ik(f'{ik_name}_ik2')
+
+        # Creating and setting switch control
+        switch_ctr = MayaData.curves.load_shape(shapes['knot'], name=f'{name}_switch_ctl')
+        MayaData.curves.load_color(22, name=switch_ctr)  # Yellow color
+
+        cmds.group(switch_ctr, n=f'{name}_switch_offset')
+        cmds.parentConstraint(f'{name}_{self.chain_size - 1}_jnt', switch_ctr)
+
+        cmds.addAttr(switch_ctr, ln='switchIkFk', at='double', min=0, max=1)
+        cmds.setAttr(f'{switch_ctr}.switchIkFk', e=True, keyable=True)
+
+        for attr in ['tx', 'ty', 'tz', 'rx', 'ry', 'rz', 'sx', 'sy', 'sz', 'visibility']:
+            cmds.setAttr(f'{switch_ctr}.{attr}', lock=True, keyable=False, channelBox=False)
+
+        # Connecting matrices to blend between IK and FK
+        for n_jnt in range(self.chain_size):
+            constraint.blend_matrix(f'{name}_{n_jnt}_cns', f'{ik_name}_{n_jnt}_cns', f'{switch_ctr}.switchIkFk')
+
+        # Connecting visibility
+        fk_controls = cmds.listRelatives(f'{name}_fk0_npo', ad=True, typ='nurbsCurve')
+        fk_controls = set([cmds.listRelatives(child, p=True)[0] for child in fk_controls])
+        ik_controls = [f'{ik_name}_ik0_ctl', f'{ik_name}_ik1_ctl', f'{ik_name}_ik2_ctl']
+
+        self.connect_visibility(name, ik_controls, fk_controls, switch_ctr)
