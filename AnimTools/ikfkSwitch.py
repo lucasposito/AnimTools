@@ -9,6 +9,8 @@ from MayaData.lib import constraint, templates
 
 import MayaData
 import json
+import numpy
+import math
 
 with open(templates.__path__[0] + '\\shapes.json', 'r') as f:
     shapes = json.loads(f.read())
@@ -98,6 +100,90 @@ class IKFK(object):
         pole_position = point_b + (pb_normal * vector_ab.length())
         return pole_position.x, pole_position.y, pole_position.z
 
+    @staticmethod
+    def _get_elbow_pos(ik_root, ik_end, pole_vector, upper_length, lower_length):
+        root_pos = OpenMaya.MVector(ik_root)
+        end_pos = OpenMaya.MVector(ik_end)
+        p_vector_pos = OpenMaya.MVector(pole_vector)
+
+        ik_vector = end_pos - root_pos
+        ik_length = ik_vector.length()
+        ik_dir = ik_vector.normal()
+
+        arm_total = upper_length + lower_length
+        if ik_length > arm_total:
+            ik_length = arm_total - 0.001  # Slightly shorter to avoid math errors
+
+        # Law of Cosines to find projection length from root to elbow along IK vector
+        a = upper_length
+        b = lower_length
+        c = ik_length
+
+        x = (a ** 2 - b ** 2 + c ** 2) / (2 * c)  # Distance from root along IK line
+        proj_point = root_pos + ik_dir * x
+
+        # Get elbow offset direction using pole vector
+        pole_dir = p_vector_pos - root_pos
+        proj = pole_dir - ik_dir * (pole_dir * ik_dir)
+        perp_dir = proj.normal()
+
+        # Elbow height using Pythagoras
+        h = math.sqrt(max(0.0, a ** 2 - x ** 2))  # max(0.0, …) guards against negative roots
+        return proj_point + perp_dir * h
+
+    @staticmethod
+    def _set_aim_vector(main_object, aim_position, sec_position):
+        sec_position = OpenMaya.MVector(sec_position)
+        aim_pos = OpenMaya.MVector(aim_position)
+        obj_pos = OpenMaya.MVector(cmds.xform(main_object, q=True, ws=True, t=True))
+
+        obj_dag = OpenMaya.MSelectionList().add(main_object).getDagPath(0)
+        transform_fn = OpenMaya.MFnTransform(obj_dag)
+
+        aim_axis = OpenMaya.MVector.kXaxisVector
+        sec_axis = OpenMaya.MVector.kYaxisVector
+
+        # Construct orthonormal basis
+        aim_vector = (aim_pos - obj_pos).normal()
+        up_vector = (sec_position - aim_pos).normal()
+
+        obj_u = aim_vector  # Forward
+        obj_v = up_vector
+        obj_w = (obj_u ^ obj_v).normal()  # Cross product → binormal
+
+        obj_v = (obj_w ^ obj_u).normal()  # Recalculate up vector to ensure orthogonality
+
+        # First rotation: align secondary axis to primary axis
+        quaternion_u = OpenMaya.MQuaternion(aim_axis, obj_u)
+        quaternion = quaternion_u
+
+        # Rotate secondary axis using first quaternion
+        sec_axis_rotated = sec_axis.rotateBy(quaternion)
+
+        # Find angle between rotated sec_axis and obj_v (desired up)
+        dot = max(min(sec_axis_rotated * obj_v, 1.0), -1.0)  # Clamp dot product
+        angle = math.acos(dot)
+        quaternion_v = OpenMaya.MQuaternion(angle, obj_u)
+
+        # Fix twist direction if needed
+        if not obj_v.isEquivalent(sec_axis_rotated.rotateBy(quaternion_v), 1.0e-5):
+            angle = (2 * math.pi) - angle
+            quaternion_v = OpenMaya.MQuaternion(angle, obj_u)
+
+        # Combine rotations
+        quaternion *= quaternion_v
+        transform_fn.setRotation(quaternion, OpenMaya.MSpace.kWorld)
+
+    @staticmethod
+    def _get_matrix_vector(matrix, vector):
+        vector = vector.lower()
+        if vector == 'x':
+            return OpenMaya.MVector(matrix[0], matrix[1], matrix[2])
+        if vector == 'y':
+            return OpenMaya.MVector(matrix[4], matrix[5], matrix[6])
+        if vector == 'z':
+            return OpenMaya.MVector(matrix[8], matrix[9], matrix[10])
+
     def match_ik_to_fk(self, mods=None):
         if not mods:
             mods = self.check_selection()
@@ -119,35 +205,37 @@ class IKFK(object):
         if not mods:
             mods = list(self.modules.keys())
 
-        playback_start = self.start_frame
-        playback_end = self.end_frame
-        timeline = range(int(playback_start), int(playback_end))
-        controllers = list()
-
-        for key in mods:
-            controllers.append(self.modules[key][3])
-            controllers.append(self.modules[key][4])
-
-        for frame in timeline:
+        for frame in range(int(self.start_frame), int(self.end_frame) + 1):
             cmds.currentTime(frame, edit=True)
-
-            cmds.cutKey(controllers, time=(frame, frame), option="keys")
             self.match_ik_to_fk(mods)
-            cmds.setKeyframe(controllers, hi='none', at=['translate', 'rotate'], s=False, t=frame)
-        cmds.delete(controllers, sc=True)
 
     def match_fk_to_ik(self, mods=None):
-        pass
-        # if not mods:
-        #     mods = self.check_selection()
-        #
-        # for mod in mods:
-        #     root_ik = '_'.join(self.modules[mod][2].split('_')[:-1] + [self.ik_suffix])
-        #     mid_ik = '_'.join(self.modules[mod][1].split('_')[:-1] + [self.ik_suffix])
-        #
-        #     constraint.matrix(root_ik, '{}_{}'.format(self.modules[mod][2], self.ctr_suffix))
-        #     constraint.matrix(mid_ik, '{}_{}'.format(self.modules[mod][1], self.ctr_suffix))
-        #     self.match_tip(mod, fk=True)
+        if not mods:
+            mods = self.check_selection()
+        for mod in mods:
+            root_pos = cmds.xform(self.modules[mod][0], q=1, t=1, ws=1)
+            end_pos = cmds.xform(self.modules[mod][-1], q=1, t=1, ws=1)
+            p_vector_pos = cmds.xform(self.modules[mod][3], q=1, t=1, ws=1)
+            upper_length = (OpenMaya.MVector(cmds.xform(self.modules[mod][1], q=1, t=1, ws=1)) -
+                            OpenMaya.MVector(cmds.xform(self.modules[mod][0], q=1, t=1, ws=1))).length()
+
+            lower_length = (OpenMaya.MVector(cmds.xform(self.modules[mod][2], q=1, t=1, ws=1)) -
+                            OpenMaya.MVector(cmds.xform(self.modules[mod][1], q=1, t=1, ws=1))).length()
+
+            elbow_pos = IKFK()._get_elbow_pos(root_pos, end_pos, p_vector_pos, upper_length, lower_length)
+
+            # Still giving gimbal lock problems
+            root_dag = OpenMaya.MSelectionList().add(self.modules[mod][0]).getDagPath(0)
+            mat = OpenMaya.MFnTransform(root_dag).getPath().inclusiveMatrix()
+            up_vector = IKFK()._get_matrix_vector(mat, 'y') * 10
+
+            IKFK()._set_aim_vector(self.modules[mod][0], elbow_pos, up_vector)
+            IKFK()._set_aim_vector(self.modules[mod][1], end_pos, p_vector_pos)
+
+            cmds.xform(self.modules[mod][1], t=(elbow_pos.x, elbow_pos.y, elbow_pos.z), ws=True)
+
+            # Debug locator at the elbow position
+            # cmds.xform(cmds.spaceLocator()[0], t=(elbow_pos.x, elbow_pos.y, elbow_pos.z), ws=True)
 
     def bake_fk_to_ik(self):
         if not self.modules:
@@ -157,21 +245,9 @@ class IKFK(object):
         if not mods:
             mods = list(self.modules.keys())
 
-        playback_start = self.start_frame
-        playback_end = self.end_frame
-        timeline = range(int(playback_start), int(playback_end))
-        controllers = []
-        for key in mods:
-            controllers.append('{}_{}'.format(self.modules[key][0], self.ctr_suffix))
-            controllers.append('{}_{}'.format(self.modules[key][1], self.ctr_suffix))
-            controllers.append('{}_{}'.format(self.modules[key][2], self.ctr_suffix))
-        for frame in timeline:
+        for frame in range(int(self.start_frame), int(self.end_frame) + 1):
             cmds.currentTime(frame, edit=True)
-            cmds.cutKey(controllers, time=(frame, frame), option="keys")
-
             self.match_fk_to_ik(mods)
-            cmds.setKeyframe(controllers, hi='none', at=['translate', 'rotate'], s=False, t=frame)
-        cmds.delete(controllers, sc=True)
 
 
 class ikfkUI(QtWidgets.QDialog):
