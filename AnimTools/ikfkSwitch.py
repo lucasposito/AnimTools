@@ -9,7 +9,6 @@ from MayaData.lib import constraint, templates
 
 import MayaData
 import json
-import numpy
 import math
 
 with open(templates.__path__[0] + '\\shapes.json', 'r') as f:
