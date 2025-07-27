@@ -132,7 +132,7 @@ class IKFK(object):
         return proj_point + perp_dir * h
 
     @staticmethod
-    def _set_aim_vector(main_object, aim_position, sec_position):
+    def _set_aim_vector(main_object, aim_position, sec_position, mirrored=False):
         sec_position = OpenMaya.MVector(sec_position)
         aim_pos = OpenMaya.MVector(aim_position)
         obj_pos = OpenMaya.MVector(cmds.xform(main_object, q=True, ws=True, t=True))
@@ -146,6 +146,10 @@ class IKFK(object):
         # Construct orthonormal basis
         aim_vector = (aim_pos - obj_pos).normal()
         up_vector = (sec_position - aim_pos).normal()
+
+        if mirrored:
+            aim_vector *= -1
+            up_vector *= -1
 
         obj_u = aim_vector  # Forward
         obj_v = up_vector
@@ -213,6 +217,9 @@ class IKFK(object):
         if not mods:
             mods = self.check_selection()
         for mod in mods:
+            mirrored = False
+            if self.modules[mod][0].split('_')[1][0] == 'R':  # Temporary solution to mirrored modules
+                mirrored = True
             root_pos = cmds.xform(self.modules[mod][0], q=1, t=1, ws=1)
             end_pos = cmds.xform(self.modules[mod][-1], q=1, t=1, ws=1)
             p_vector_pos = cmds.xform(self.modules[mod][3], q=1, t=1, ws=1)
@@ -229,8 +236,8 @@ class IKFK(object):
             mat = OpenMaya.MFnTransform(root_dag).getPath().inclusiveMatrix()
             up_vector = IKFK()._get_matrix_vector(mat, 'y') * 10
 
-            IKFK()._set_aim_vector(self.modules[mod][0], elbow_pos, up_vector)
-            IKFK()._set_aim_vector(self.modules[mod][1], end_pos, p_vector_pos)
+            IKFK()._set_aim_vector(self.modules[mod][0], elbow_pos, up_vector, mirrored)
+            IKFK()._set_aim_vector(self.modules[mod][1], end_pos, p_vector_pos, mirrored)
 
             cmds.xform(self.modules[mod][1], t=(elbow_pos.x, elbow_pos.y, elbow_pos.z), ws=True)
 
