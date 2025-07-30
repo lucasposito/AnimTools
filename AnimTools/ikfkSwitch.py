@@ -1,10 +1,7 @@
 from maya.api import OpenMaya
 from maya import OpenMayaUI, cmds
 
-from PySide2 import QtWidgets
-from PySide2 import QtCore
-from shiboken2 import wrapInstance
-
+from AnimTools.pyside import QtWidgets, QtCore, maya_window
 from MayaData.lib import constraint, templates
 
 import MayaData
@@ -13,11 +10,6 @@ import math
 
 with open(templates.__path__[0] + '\\shapes.json', 'r') as f:
     shapes = json.loads(f.read())
-
-
-def maya_main_window():
-    main_window_ptr = OpenMayaUI.MQtUtil.mainWindow()
-    return wrapInstance(int(main_window_ptr), QtWidgets.QWidget)
 
 
 def retrieve_fk_pose(hierarchy):
@@ -270,7 +262,7 @@ class ikfkUI(QtWidgets.QDialog):
             cls.ui_instance.raise_()
             cls.ui_instance.activateWindow()
 
-    def __init__(self, parent=maya_main_window()):
+    def __init__(self, parent=maya_window()):
         super(ikfkUI, self).__init__(parent)
 
         self.setWindowTitle("IK FK Switch")

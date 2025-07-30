@@ -1,17 +1,9 @@
 
 from maya import OpenMayaUI, cmds
-
-from PySide2 import QtWidgets
-from PySide2 import QtCore
-from shiboken2 import wrapInstance
-
-import json
 from pathlib import Path
+import json
 
-
-def maya_main_window():
-    main_window_ptr = OpenMayaUI.MQtUtil.mainWindow()
-    return wrapInstance(int(main_window_ptr), QtWidgets.QWidget)
+from AnimTools.pyside import QtWidgets, QtCore, maya_window
 
 
 class NameUI(QtWidgets.QDialog):
@@ -55,7 +47,7 @@ class SelectUI(QtWidgets.QDialog):
         cls.ui_instance.update_data(cls.ui_instance)
         cls.ui_instance.update_namespaces(cls.ui_instance)
 
-    def __init__(self, parent=maya_main_window()):
+    def __init__(self, parent=maya_window()):
         super(SelectUI, self).__init__(parent)
 
         self.setWindowTitle("Selection Helper")
